@@ -18,6 +18,26 @@ test_script_LDADD = $(script_LDADD)
 test_script_CFLAGS = -DTEST_SCRIPT $(logger_CFLAGS)
 endif # BUILD_SCRIPT
 
+if BUILD_MINAS
+usrbin_exec_PROGRAMS += minas
+MANPAGES += term-utils/minas.1
+dist_noinst_DATA += term-utils/minas.1.adoc
+minas_SOURCES = term-utils/minas.c \
+		 lib/pty-session.c \
+		 include/pty-session.h \
+		 lib/monotonic.c
+minas_CFLAGS = $(AM_CFLAGS) -Wno-format-y2k
+minas_LDADD = $(LDADD) libcommon.la $(MATH_LIBS) $(REALTIME_LIBS) -lutil
+if HAVE_UTEMPTER
+minas_LDADD += -lutempter
+endif
+
+check_PROGRAMS += test_minas
+test_minas_SOURCES = $(minas_SOURCES)
+test_minas_LDADD = $(minas_LDADD)
+test_minas_CFLAGS = -DTEST_SCRIPT $(logger_CFLAGS)
+endif # BUILD_MINAS
+
 if BUILD_SCRIPTREPLAY
 usrbin_exec_PROGRAMS += scriptreplay
 MANPAGES += term-utils/scriptreplay.1

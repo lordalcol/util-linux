@@ -2304,9 +2304,9 @@ AM_CONDITIONAL([BUILD_SETARCH], [test "x$build_setarch" = xyes])
 
 
 # build_scriptutils= is just configure-only variable to control
-# script, scriptreplay and scriptlive
+# script, scriptreplay, scriptlive and minas
 AC_ARG_ENABLE([scriptutils],
-  AS_HELP_STRING([--disable-scriptutils], [do not build script, scriptreplay and scriptlive]),
+  AS_HELP_STRING([--disable-scriptutils], [do not build script, scriptreplay, scriptlive and minas]),
   [], [UL_DEFAULT_ENABLE([scriptutils], [check])]
 )
 
@@ -2314,6 +2314,11 @@ UL_ENABLE_ALIAS([script], [scriptutils])
 UL_BUILD_INIT([script])
 UL_REQUIRES_HAVE([script], [pty], [openpty function (libutil)])
 AM_CONDITIONAL([BUILD_SCRIPT], [test "x$build_script" = xyes])
+
+UL_ENABLE_ALIAS([minas], [scriptutils])
+UL_BUILD_INIT([minas])
+UL_REQUIRES_HAVE([minas], [pty], [openpty function (libutil)])
+AM_CONDITIONAL([BUILD_MINAS], [test "x$build_minas" = xyes])
 
 UL_ENABLE_ALIAS([scriptreplay], [scriptutils])
 UL_BUILD_INIT([scriptreplay])
