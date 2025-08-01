@@ -54,6 +54,7 @@
 #include <sys/signalfd.h>
 #include <assert.h>
 #include <inttypes.h>
+#include <regex.h>
 
 #include "closestream.h"
 #include "nls.h"
@@ -121,6 +122,13 @@ struct script_stream {
 	char ident;			/* stream identifier */
 };
 
+/* Regex pattern structure for filtering */
+struct minas_pattern {
+	regex_t regex;
+	const char *name;
+	bool compiled;
+};
+
 struct script_control {
 	uint64_t outsz;		/* current output files size */
 	uint64_t maxsz;		/* maximum output files size */
@@ -148,6 +156,10 @@ struct script_control {
 		quiet,		/* suppress most output */
 		force,		/* write output to links */
 		isterm;		/* is child process running as terminal */
+	
+	/* Regex patterns for filtering */
+	struct minas_pattern *patterns;
+	size_t n_patterns;
 };
 
 static ssize_t log_info(struct script_control *ctl, const char *name, const char *msgfmt, ...)
@@ -156,6 +168,90 @@ static ssize_t log_info(struct script_control *ctl, const char *name, const char
 static void script_init_debug(void)
 {
 	__UL_INIT_DEBUG_FROM_ENV(script, SCRIPT_DEBUG_, 0, SCRIPT_DEBUG);
+}
+
+/* Initialize regex patterns for filtering */
+static int init_regex_patterns(struct script_control *ctl)
+{
+	const char *patterns[] = {
+		"error:",		/* error: (case-sensitive, requires colon) */
+		"ERROR:",		/* ERROR: (uppercase variant) */
+		"Linking ",		/* Linking  (with trailing space) */
+		"warning",		/* warning (case-sensitive) */
+		"Running ",		/* Running  (with trailing space) */
+		"Run ",		/* Run  (with trailing space) */
+		NULL
+	};
+	
+	size_t i, count = 0;
+	
+	/* Count patterns */
+	for (i = 0; patterns[i] != NULL; i++)
+		count++;
+	
+	ctl->n_patterns = count;
+	ctl->patterns = xcalloc(count, sizeof(struct minas_pattern));
+	
+	/* Compile each pattern */
+	for (i = 0; i < count; i++) {
+		ctl->patterns[i].name = patterns[i];
+		ctl->patterns[i].compiled = false;
+		
+		int ret = regcomp(&ctl->patterns[i].regex, patterns[i], REG_EXTENDED | REG_NOSUB);
+		if (ret != 0) {
+			char errbuf[256];
+			regerror(ret, &ctl->patterns[i].regex, errbuf, sizeof(errbuf));
+			warnx(_("failed to compile regex pattern '%s': %s"), patterns[i], errbuf);
+			continue;
+		}
+		ctl->patterns[i].compiled = true;
+	}
+	
+	return 0;
+}
+
+/* Free regex patterns */
+static void free_regex_patterns(struct script_control *ctl)
+{
+	if (!ctl->patterns)
+		return;
+	
+	for (size_t i = 0; i < ctl->n_patterns; i++) {
+		if (ctl->patterns[i].compiled) {
+			regfree(&ctl->patterns[i].regex);
+		}
+	}
+	
+	free(ctl->patterns);
+	ctl->patterns = NULL;
+	ctl->n_patterns = 0;
+}
+
+/* Check if line matches any regex pattern */
+static bool line_matches_patterns(struct script_control *ctl, const char *line, size_t line_len)
+{
+	if (!ctl->patterns)
+		return false;
+	
+	for (size_t i = 0; i < ctl->n_patterns; i++) {
+		if (!ctl->patterns[i].compiled)
+			continue;
+		
+		/* Create a null-terminated copy for regex matching */
+		char *line_copy = xmalloc(line_len + 1);
+		memcpy(line_copy, line, line_len);
+		line_copy[line_len] = '\0';
+		
+		int ret = regexec(&ctl->patterns[i].regex, line_copy, 0, NULL, 0);
+		free(line_copy);
+		
+		if (ret == 0) {
+			DBG(IO, ul_debug("line matches pattern '%s'", ctl->patterns[i].name));
+			return true;
+		}
+	}
+	
+	return false;
 }
 
 static void init_terminal_info(struct script_control *ctl)
@@ -544,15 +640,8 @@ static ssize_t log_stream_activity(
 			size_t line_len = newline ? (newline - line_start + 1) : (buf_end - line_start);
 			if (!newline) break; // Partial line, wait for next read
 
-			if (
-				memmem(line_start, line_len, "error:", 6) ||
-				memmem(line_start, line_len, "ERROR:", 6) ||
-				memmem(line_start, line_len, "Linking ", 8) ||
-				memmem(line_start, line_len, "warning", 7) ||
-				memmem(line_start, line_len, "Running ", 8) ||
-				memmem(line_start, line_len, "Run ", 4) ||
-				false
-				) {
+			/* Use regex patterns for filtering */
+			if (line_matches_patterns(ctl, line_start, line_len)) {
 				ssize_t ssz = log_write(ctl, stream, stream->logs[i], buf, line_len);
 
 				if (ssz < 0)
@@ -851,6 +940,12 @@ int main(int argc, char **argv)
 	script_init_debug();
 	ON_DBG(PTY, ul_pty_init_debug(0xFFFF));
 
+	/* Initialize regex patterns for filtering */
+	if (init_regex_patterns(&ctl) != 0) {
+		warnx(_("failed to initialize regex patterns"));
+		/* Continue anyway, filtering will be disabled */
+	}
+
 	ctl.isterm = isatty(STDIN_FILENO);
 
 	while ((ch = getopt_long(argc, argv, "+aB:c:eE:fI:O:o:qm:T:t::Vh", longopts, NULL)) != -1) {
@@ -1137,6 +1232,9 @@ int main(int argc, char **argv)
 done:
 	ul_pty_cleanup(ctl.pty);
 	logging_done(&ctl, NULL);
+
+	/* Free regex patterns */
+	free_regex_patterns(&ctl);
 
 	if (!ctl.quiet)
 		printf(_("Script done.\n"));
